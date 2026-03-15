@@ -483,16 +483,16 @@ const ACCENTS=[
 
 // All available connectors
 const ALL_CONNECTORS = [
-  {id:'nos',    name:'NOS.nl',       color:'#CC0000', flag:'🇳🇱', desc:'Nederlands publiek nieuws',         rss:'https://feeds.nos.nl/nosnieuws'},
-  {id:'nu',     name:'NU.nl',        color:'#E85D04', flag:'🇳🇱', desc:'Nieuws en entertainment',           rss:'https://www.nu.nl/rss/algemeen'},
-  {id:'rtl',    name:'RTL Nieuws',   color:'#005CAB', flag:'🇳🇱', desc:'RTL nieuws & achtergronden',        rss:'https://www.rtlnieuws.nl/feeds/rss/rtlnieuws.xml'},
-  {id:'bbc',    name:'BBC News',     color:'#BB1919', flag:'🇬🇧', desc:'Internationaal nieuws (Engels)',     rss:'https://feeds.bbci.co.uk/news/rss.xml'},
-  {id:'bbcsport',name:'BBC Sport',   color:'#FF6600', flag:'🇬🇧', desc:'Sport nieuws van BBC',              rss:'https://feeds.bbci.co.uk/sport/rss.xml'},
-  {id:'tweakers',name:'Tweakers',    color:'#007ACC', flag:'🇳🇱', desc:'Tech nieuws in het Nederlands',     rss:'https://feeds.tweakers.net/niws/1.0/mixed.xml'},
-  {id:'guardian',name:'The Guardian',color:'#005689', flag:'🇬🇧', desc:'Britse kwaliteitskrant',            rss:'https://www.theguardian.com/world/rss'},
-  {id:'techcrunch',name:'TechCrunch',color:'#0A9E5C',flag:'🇺🇸', desc:'Silicon Valley tech nieuws',        rss:'https://techcrunch.com/feed/'},
-  {id:'nos_sport',name:'NOS Sport',  color:'#CC0000', flag:'🇳🇱', desc:'Sport nieuws van NOS',              rss:'https://feeds.nos.nl/nossportalgemeen'},
-  {id:'fd',     name:'FD.nl',        color:'#E4A100', flag:'🇳🇱', desc:'Financieel Dagblad nieuws',         rss:'https://fd.nl/rss'},
+  {id:'nos',    name:'NOS.nl',       color:'#CC0000', flag:'NL', desc:'Nederlands publiek nieuws',         rss:'https://feeds.nos.nl/nosnieuws'},
+  {id:'nu',     name:'NU.nl',        color:'#E85D04', flag:'NL', desc:'Nieuws en entertainment',           rss:'https://www.nu.nl/rss/algemeen'},
+  {id:'rtl',    name:'RTL Nieuws',   color:'#005CAB', flag:'NL', desc:'RTL nieuws & achtergronden',        rss:'https://www.rtlnieuws.nl/feeds/rss/rtlnieuws.xml'},
+  {id:'bbc',    name:'BBC News',     color:'#BB1919', flag:'UK', desc:'Internationaal nieuws (Engels)',     rss:'https://feeds.bbci.co.uk/news/rss.xml'},
+  {id:'bbcsport',name:'BBC Sport',   color:'#FF6600', flag:'UK', desc:'Sport nieuws van BBC',              rss:'https://feeds.bbci.co.uk/sport/rss.xml'},
+  {id:'tweakers',name:'Tweakers',    color:'#007ACC', flag:'NL', desc:'Tech nieuws in het Nederlands',     rss:'https://feeds.tweakers.net/niws/1.0/mixed.xml'},
+  {id:'guardian',name:'The Guardian',color:'#005689', flag:'UK', desc:'Britse kwaliteitskrant',            rss:'https://www.theguardian.com/world/rss'},
+  {id:'techcrunch',name:'TechCrunch',color:'#0A9E5C',flag:'US', desc:'Silicon Valley tech nieuws',        rss:'https://techcrunch.com/feed/'},
+  {id:'nos_sport',name:'NOS Sport',  color:'#CC0000', flag:'NL', desc:'Sport nieuws van NOS',              rss:'https://feeds.nos.nl/nossportalgemeen'},
+  {id:'fd',     name:'FD.nl',        color:'#E4A100', flag:'NL', desc:'Financieel Dagblad nieuws',         rss:'https://fd.nl/rss'},
 ];
 
 const AMS_LAT=52.3676, AMS_LNG=4.9041;
@@ -603,30 +603,74 @@ Geef minimaal 8 artikelen terug, gesorteerd van nieuwst naar oudst.`,
   return [];
 }
 
-// ── FETCH RSS direct (for GitHub hosting) ──
+// ── FETCH RSS direct ──
 async function fetchRSSDirect(src){
-  for(const proxy of CORS_PROXIES){
+  const proxies = [
+    u => `https://api.allorigins.win/get?url=${encodeURIComponent(u)}`,
+    u => `https://corsproxy.io/?${encodeURIComponent(u)}`,
+    u => `https://api.rss2json.com/v1/api.json?rss_url=${encodeURIComponent(u)}&count=10`,
+  ];
+  for(const proxy of proxies){
     try{
-      const res = await fetch(proxy(src.rss));
-      let text;
-      if(res.ok){
-        const ct = res.headers.get('content-type')||'';
-        if(ct.includes('json')){const j=await res.json();text=j.contents||j.data;}
-        else{text=await res.text();}
+      const res = await fetch(proxy(src.rss), {signal: AbortSignal.timeout(8000)});
+      if(!res.ok) continue;
+      const ct = res.headers.get('content-type')||'';
+
+      // rss2json returns clean JSON
+      if(proxy(src.rss).includes('rss2json')){
+        const j = await res.json();
+        if(j.status==='ok' && j.items?.length){
+          return j.items.slice(0,10).map(i=>({
+            title: strip(i.title||''),
+            excerpt: strip((i.description||i.content||'').slice(0,250)),
+            source: src.name, color: src.color,
+            url: i.link||i.guid||src.rss,
+            pubDate: i.pubDate||new Date().toISOString()
+          }));
+        }
+        continue;
       }
-      if(!text) continue;
-      const parser=new DOMParser();
-      const xml=parser.parseFromString(text,'text/xml');
-      const items=[...xml.querySelectorAll('item')].slice(0,8);
+
+      // allorigins wraps in JSON
+      let text;
+      if(ct.includes('json')){
+        const j = await res.json();
+        text = j.contents || j.data || '';
+      } else {
+        text = await res.text();
+      }
+      if(!text || text.length < 100) continue;
+
+      // Parse XML
+      const parser = new DOMParser();
+      const xml = parser.parseFromString(text, 'text/xml');
+      if(xml.querySelector('parsererror')) continue;
+
+      const items = [...xml.querySelectorAll('item')].slice(0,10);
       if(!items.length) continue;
-      return items.map(i=>({
-        title:strip(i.querySelector('title')?.textContent||''),
-        excerpt:strip((i.querySelector('description')?.textContent||'').slice(0,200)),
-        source:src.name, color:src.color,
-        url:i.querySelector('link')?.textContent||src.rss,
-        pubDate:i.querySelector('pubDate')?.textContent||new Date().toISOString()
-      }));
-    }catch(e){}
+
+      return items.map(i=>{
+        // <link> in RSS is a text node sibling, not an attribute
+        let url = '';
+        const linkEl = i.querySelector('link');
+        if(linkEl){
+          // Try text content first
+          url = linkEl.textContent?.trim() || '';
+          // If empty, try nextSibling (RSS 2.0 quirk)
+          if(!url && linkEl.nextSibling) url = linkEl.nextSibling.textContent?.trim()||'';
+        }
+        // Fallback to guid
+        if(!url) url = i.querySelector('guid')?.textContent?.trim()||src.rss;
+        const desc = i.querySelector('description')?.textContent||
+                     i.querySelector('content\\:encoded')?.textContent||'';
+        return {
+          title: strip(i.querySelector('title')?.textContent||''),
+          excerpt: strip(desc).slice(0,250),
+          source: src.name, color: src.color,
+          url, pubDate: i.querySelector('pubDate')?.textContent||new Date().toISOString()
+        };
+      }).filter(a=>a.title);
+    }catch(e){ continue; }
   }
   return [];
 }
